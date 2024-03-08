@@ -1,0 +1,230 @@
+#include <FastLED.h>
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Defining TCP
+#define HOST "tcp.alerts.com.ua"
+#define PORT 1024
+#define API_KEY "your_api_key"
+
+// Defining Piezo Buzzer and LED Strip
+#define NUM_LEDS 27
+#define LEDS_PIN 13
+#define BUZZ_PIN 4
+CRGB leds[NUM_LEDS];
+
+// Defining WiFi 
+WiFiClient client;
+char ssid[] = "your_wifi_name";
+char password[] = "your_wifi_password";
+
+// Timer helper
+unsigned long tunrOnMillis;
+const long startUpTimerInterval = 10;
+
+// Regions "Map" in order of corresponding LEDs
+const char* regions[] = {
+  "АР_Крим",                   // 0
+  "Херсонська_область",        // 1
+  "Миколаївська_область",      // 2
+  "Кіровоградська_область",    // 3
+  "Дніпропетровська_область",  // 4
+  "Запорізька_область",        // 5
+  "Донецька_область",          // 6
+  "Луганська_область",         // 7
+  "Харківська_область",        // 8
+  "Сумська_область",           // 9
+  "Чернігівська_область",      // 10
+  "Житомирська_область",       // 11
+  "Рівненська_область",        // 12
+  "Волинська_область",         // 13
+  "Львівська_область",         // 14
+  "Закарпатська_область",      // 15
+  "Чернівецька_область",       // 16
+  "ІваноФранківська_область",  // 17
+  "Тернопільська_область",     // 18
+  "Хмельницька_область",       // 19
+  "Київська_область",          // 20
+  "Полтавська_область",        // 21
+  "Черкаська_область",         // 22
+  "Вінницька_область",         // 23
+  "Одеська_область",           // 24
+};
+
+// Regions "Table" 
+// {API Region ID, LED index} // Index of table row // Region name
+int regionsTable[25][2]{
+  { 1, 23 },   //0 //Вінницька_область
+  { 2, 13 },   //1 //Волинська_область
+  { 3, 4 },    //2 //Дніпропетровська_область
+  { 4, 6 },    //3 //Донецька_область
+  { 5, 11 },   //4 //Житомирська_область
+  { 6, 15 },   //5 //Закарпатська_область
+  { 7, 5 },    //6 //Запорізька_область
+  { 8, 17 },   //7 //ІваноФранківська_область
+  { 9, 20 },   //8 //Київська_область
+  { 10, 3 },   //9 //Кіровоградська_область
+  { 11, 7 },   //10 //Луганська_область
+  { 12, 14 },  //11 //Львівська_область
+  { 13, 2 },   //12 //Миколаївська_область
+  { 14, 24 },  //13 // Одеська_область
+  { 15, 21 },  //14 //Полтавська_область
+  { 16, 12 },  //15 //Рівненська_область
+  { 17, 9 },   //16 //Сумська_область
+  { 18, 18 },  //17 //Тернопільська_область
+  { 19, 8 },   //18 //Харківська_область
+  { 20, 1 },   //19 //Херсонська_область
+  { 21, 19 },  //20 //Хмельницька_область
+  { 22, 22 },  //21 //Черкаська_область
+  { 23, 16 },  //22 //Чернівецька_область
+  { 24, 10 },  //23 //Чернігівська_область
+  { 25, 20 },  //24 //Київська_область
+};
+
+///////////////// Setup /////////////////
+void setup() {
+  tunrOnMillis = millis(); // Timer function
+
+  FastLED.addLeds<WS2812, LEDS_PIN, GRB>(leds, NUM_LEDS); 
+
+  Serial.begin(115200);
+  
+  // Connecting to the WiFi
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.print("Connecting to WiFi...");
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(200);
+      Serial.print(".");
+    }
+    Serial.println("Connected to WiFi");
+  }
+
+  // Connecting to TCP-server
+  if (!client.connected()) {
+    while (!client.connect(HOST, PORT)) {
+      Serial.println(" Failed.");
+      delay(1000);
+    }
+    Serial.println("Connected to API");
+    client.write(API_KEY);
+  }
+
+  // Lighting Crimea in a state of Alarm, due to lack of alarms from there
+  paintORDLO();
+}
+
+///////////////// Loop /////////////////
+void loop() {
+  // Reading the information while available 
+  String data;
+
+  while (client.available() > 0) {
+    data += (char)client.read();
+  }
+
+  // Separate server response by \n symbol
+  int newlineIndex;
+  do {
+    newlineIndex = data.indexOf('\n');
+    if (newlineIndex != -1) {
+      String line = data.substring(0, newlineIndex);
+      const char* processedLine = data.c_str();
+      handleDataResieved(processedLine);
+      data = data.substring(newlineIndex + 1);
+    }
+  } while (newlineIndex != -1);
+
+  // Forsing board to update LED srtip
+  FastLED.show();
+}
+
+///////////////// Data Handling /////////////////
+void handleDataResieved(const char* data) {
+  // Reading data taken from server
+  int regionID;
+  int alarmStatus;
+  sscanf(data, "s:%d=%d", &regionID, &alarmStatus);
+  int ledIndex = regionsTable[regionID - 1][1];
+  const char* regionName = regions[ledIndex];
+
+  // Calling alarm or cancel depending on alarm state
+  // Enabling and disabling alarm in Odesa Region, because it takes two LEDs
+  if (alarmStatus == 1 && regionID == 14) {
+    turnRed(25);
+    turnRed(26);
+    beep();
+  } else if (alarmStatus == 0 && regionID == 14) {
+    turnGreen(25);
+    turnGreen(26);
+    doubleBeep();
+  } else if (alarmStatus == 1) {
+    callAlarm(ledIndex);
+  } else if (alarmStatus == 0) {
+    cancelAlarm(ledIndex);
+  }
+
+  // Write a report in Serial Monitor
+  if (alarmStatus == 0) {
+    Serial.print("Cancel alarm in ");
+  } else if (alarmStatus == 1) {
+    Serial.print("Alarm in ");
+  }
+  Serial.print(regionName);
+  Serial.print(". ID: ");
+  Serial.print(regionID);
+  Serial.print(", index: ");
+  Serial.println(ledIndex);
+}
+///////////////// Alarm helpers /////////////////
+void callAlarm(int i) {
+  turnRed(i);
+  beep();
+}
+
+void cancelAlarm(int i) {
+  turnGreen(i);
+  doubleBeep();
+}
+///////////////// LEDs helpers /////////////////
+void paintORDLO() {
+  leds[0] = CHSV(0, 255, 50);
+  FastLED.show();
+}
+
+void turnGreen(int index) {
+  leds[index] = CHSV(120, 255, 50);
+  FastLED.show();
+}
+
+void turnRed(int index) {
+  leds[index] = CHSV(0, 255, 50);
+  FastLED.show();
+}
+
+///////////////// Buzzer helpers /////////////////
+void beep() {
+  tone(BUZZ_PIN, 30);
+  delay(100);
+  noTone(BUZZ_PIN);
+}
+
+void doubleBeep() {
+  // Giving short delay to prevent map beeping for a minute on start
+  unsigned long millisNow = millis();
+  unsigned long delayNow = tunrOnMillis - millisNow;
+
+  if(delayNow < startUpTimerInterval) {
+    tone(BUZZ_PIN, 10);
+    delay(50);
+    noTone(BUZZ_PIN);
+    delay(50);
+    tone(BUZZ_PIN, 10);
+    delay(50);
+    noTone(BUZZ_PIN);
+  }
+}
